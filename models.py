@@ -8,7 +8,7 @@ class User(Base):
     name = Column(String)
     email = Column(String, unique=True)
     password = Column(String)
-
+    role = Column(String, default="client")
 class Team(Base):
     __tablename__ = "teams"
 

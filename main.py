@@ -36,10 +36,14 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
         user_id = payload.get("user_id")
+        role = payload.get("role")
 
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
-        return user_id
+        return{
+            "user_id": user_id,
+            "role": role
+        }
 
     except JWTError:
         raise HTTPException(status_code=401,detail="Invalid token")
@@ -63,7 +67,8 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
     new_user = User(
         name=user.name,
         email=user.email,
-        password=hashed_password
+        password=hashed_password,
+        role=user.role
     )
 
     # Add user to database
@@ -100,12 +105,9 @@ def login(user: LoginSchema, db: Session = Depends(get_db)):
 
     if not password_correct:
 
-        raise HTTPException(
-            status_code=401,
-            detail="Incorrect password"
-        )
+        raise HTTPException(status_code=401, detail="Incorrect password")
 
-    access_token = create_access_token(data={"user_id": existing_user.id})
+    access_token = create_access_token(data={"user_id": existing_user.id, "role": existing_user.role})
 
     return {
         "message": "Login successful",
