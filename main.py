@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-import uuid
+import uuid , os
 from fastapi.responses import FileResponse
 
 from database import engine, Base, get_db
@@ -78,20 +78,45 @@ def get_user_by_id(user_id:int, db:Session=Depends(get_db), current_user=Depends
     
     return user
 
-@app.delete("/users/{user_id")
-def delete_user(user_id:int, db:Session=Depends(get_db), current_user=Depends(admin_required)):
+@app.delete("/users/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
-    user=db.query(User).filter(User.id==user_id).first()
+    user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    db.delete(user)
-    db.commit()
+    try:
+        # Remove user from team memberships
+        db.query(TeamMember).filter(TeamMember.user_id == user_id).delete()
 
-    return {
-        "message":"User deleted successfully"
-    }
+        # Remove user's comments
+        db.query(Comment).filter(Comment.user_id == user_id).delete()
+
+        # Remove user's attachments
+        db.query(Attachment).filter(Attachment.uploaded_by == user_id).delete()
+
+        # Remove tasks assigned to user
+        db.query(Task).filter(Task.assigned_to == user_id).delete()
+
+        # Remove tasks created by user
+        db.query(Task).filter(Task.created_by == user_id).delete()
+
+        # Finally delete user
+        db.delete(user)
+
+        db.commit()
+
+        return {
+            "message": "User deleted successfully"
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
 
 @app.put("/users/{user_id}/role")
 def update_user_role(user_id: int, role_data: RoleUpdate, db: Session = Depends(get_db), current_user = Depends(admin_required)):
@@ -524,6 +549,8 @@ def upload_file(task_id: int, file: UploadFile = File(...), db: Session = Depend
 
     unique_filename = f"{uuid.uuid4()}_{file.filename}"
     file_location = f"uploads/{unique_filename}"
+
+    os.makedirs("uploads", exist_ok=True)
 
     with open(file_location, "wb") as buffer:
         buffer.write(file.file.read())
