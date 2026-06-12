@@ -4,7 +4,6 @@ class UserCreate(BaseModel):
     name: str
     email: str
     password: str
-    role: str
     
 class LoginSchema(BaseModel):
     email: str
@@ -30,9 +29,25 @@ class TaskCreate(BaseModel):
     priority: str
     project_id: int
     assigned_to: int
-    created_by: int
 
 class CommentCreate(BaseModel):
     content: str
     task_id: int
+
+class RoleUpdate(BaseModel):
+    role: str
+
+class AssignTask(BaseModel):
     user_id: int
+
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    role: str
+
+    class Config:
+        from_attributes = True
+
+class TaskStatusUpdate(BaseModel):
+    status: str

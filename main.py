@@ -1,13 +1,14 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File 
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 import uuid
+from fastapi.responses import FileResponse
 
 from database import engine, Base, get_db
 from models import User, Team, TeamMember, Project, Task, Comment, Attachment
-from schemas import UserCreate, LoginSchema, TeamCreate, TeamMemberCreate, ProjectCreate, TaskCreate, CommentCreate
+from schemas import UserCreate, LoginSchema, TeamCreate, TeamMemberCreate, ProjectCreate, TaskCreate, CommentCreate, RoleUpdate, AssignTask, UserResponse, TaskStatusUpdate      
 
 
 Base.metadata.create_all(bind=engine)
@@ -48,19 +49,77 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise HTTPException(status_code=401,detail="Invalid token")
 
+def admin_required(current_user = Depends(get_current_user)):
+
+    if current_user["role"] != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access required"
+        )
+
+    return current_user
+
 @app.get("/")
 def home():
     return {"message": "Task Management API Running"}
 
-@app.get("/users")
-def get_users(db: Session = Depends(get_db)):
+@app.get("/users", response_model=list[UserResponse])
+def get_users(db: Session = Depends(get_db), current_user = Depends(admin_required)):
     users = db.query(User).all()
     return users
+
+@app.get("/users/{user_id}")
+def get_user_by_id(user_id:int, db:Session=Depends(get_db), current_user=Depends(admin_required)):
+
+    user=db.query(User).filter(User.id==user_id).first()
+
+    if not user:
+        raise HTTPException( status_code=404, detail="User not found")
+    
+    return user
+
+@app.delete("/users/{user_id")
+def delete_user(user_id:int, db:Session=Depends(get_db), current_user=Depends(admin_required)):
+
+    user=db.query(User).filter(User.id==user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db.delete(user)
+    db.commit()
+
+    return {
+        "message":"User deleted successfully"
+    }
+
+@app.put("/users/{user_id}/role")
+def update_user_role(user_id: int, role_data: RoleUpdate, db: Session = Depends(get_db), current_user = Depends(admin_required)):
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException( status_code=404, detail="User not found")
+
+    user.role = role_data.role
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Role updated successfully",
+        "user_id": user.id,
+        "new_role": user.role
+    }
 
 @app.post("/signup")
 def signup(user: UserCreate, db: Session = Depends(get_db)):
 
-    # Hash user password
+    existing_user = db.query(User).filter(User.email == user.email).first()
+
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already exists")
+    
+     # Hash user password
     hashed_password = hash_password(user.password)
 
     # Create user object
@@ -68,15 +127,13 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
         name=user.name,
         email=user.email,
         password=hashed_password,
-        role=user.role
+        role="client"
     )
 
     # Add user to database
     db.add(new_user)
-
     # Save changes
     db.commit()
-
     # Refresh object
     db.refresh(new_user)
 
@@ -90,41 +147,39 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
     }
 
 @app.post("/login")
-def login(user: LoginSchema, db: Session = Depends(get_db)):
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),db: Session = Depends(get_db)):
 
-    existing_user = db.query(User).filter(User.email == user.email ).first()
+    existing_user = db.query(User).filter(User.email == form_data.username).first()
 
     if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-        raise HTTPException(
-            status_code=404,
-            detail="User not found"
-        )
-
-    password_correct = pwd_context.verify(user.password, existing_user.password)
+    password_correct = pwd_context.verify(form_data.password, existing_user.password)
 
     if not password_correct:
-
         raise HTTPException(status_code=401, detail="Incorrect password")
 
-    access_token = create_access_token(data={"user_id": existing_user.id, "role": existing_user.role})
+    access_token = create_access_token(
+        {
+            "user_id": existing_user.id,
+            "role": existing_user.role
+        }
+    )
 
     return {
-        "message": "Login successful",
-        "access_token": access_token ,
+        "access_token": access_token,
         "token_type": "bearer"
     }
 
 @app.get("/me")
-def get_me(current_user: int = Depends(get_current_user)):
-    return {
-        "user_id": current_user
-    }
+def get_me(current_user = Depends(get_current_user)):
+    return current_user
 
 @app.post("/teams")
-def create_team(team: TeamCreate,db: Session = Depends(get_db)):
+def create_team(team: TeamCreate,db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
-    new_team = Team(name=team.name,description=team.description)
+    new_team = Team(name=team.name, description=team.description)
 
     db.add(new_team)
     db.commit()
@@ -158,7 +213,7 @@ def get_team_by_id(team_id: int, db: Session = Depends(get_db)):
     return team
 
 @app.put("/teams/{team_id}")
-def update_team(team_id: int, team: TeamCreate, db: Session = Depends(get_db)):
+def update_team(team_id: int, team: TeamCreate, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     existing_team = db.query(Team).filter(Team.id == team_id).first()
 
@@ -178,7 +233,7 @@ def update_team(team_id: int, team: TeamCreate, db: Session = Depends(get_db)):
     return existing_team
 
 @app.delete("/teams/{team_id}")
-def delete_team(team_id: int, db: Session = Depends(get_db)):
+def delete_team(team_id: int, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     team = db.query(Team).filter(Team.id == team_id).first()
 
@@ -197,7 +252,7 @@ def delete_team(team_id: int, db: Session = Depends(get_db)):
     }
 
 @app.post("/team-members")
-def add_member(member: TeamMemberCreate, db: Session = Depends(get_db)):
+def add_member(member: TeamMemberCreate, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     new_member = TeamMember(team_id=member.team_id, user_id=member.user_id)
 
@@ -218,14 +273,12 @@ def get_team_members(team_id: int, db: Session = Depends(get_db)):
     return members
 
 @app.post("/projects")
-def create_project(project: ProjectCreate, db: Session = Depends(get_db)):
+def create_project(project: ProjectCreate, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     new_project = Project(name = project.name, description = project.description, team_id = project.team_id)
 
     db.add(new_project)
-
     db.commit()
-
     db.refresh(new_project)
 
     return {
@@ -249,7 +302,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     return project
 
 @app.put("/projects/{project_id}")
-def update_project(project_id: int, project: ProjectCreate, db: Session = Depends(get_db)):
+def update_project(project_id: int, project: ProjectCreate, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     existing_project = db.query(Project).filter(Project.id == project_id).first()
 
@@ -267,7 +320,7 @@ def update_project(project_id: int, project: ProjectCreate, db: Session = Depend
     return existing_project
 
 @app.delete("/projects/{project_id}")
-def delete_project(project_id: int, db: Session = Depends(get_db)):
+def delete_project(project_id: int, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     project = db.query(Project).filter(Project.id == project_id).first()
 
@@ -283,7 +336,7 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
     }
 
 @app.post("/tasks")
-def create_task(task: TaskCreate, db: Session = Depends(get_db)):
+def create_task(task: TaskCreate, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     new_task = Task(
         title=task.title,
@@ -292,7 +345,7 @@ def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         priority=task.priority,
         project_id=task.project_id,
         assigned_to=task.assigned_to,
-        created_by=task.created_by
+        created_by=current_user["user_id"]
     )
 
     db.add(new_task)
@@ -303,6 +356,26 @@ def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         "message": "Task created successfully",
         "task": new_task
     }
+
+@app.put("/tasks/{task_id}/status")
+def update_task_status(task_id: int, status_data: TaskStatusUpdate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+
+    task = db.query(Task).filter(Task.id == task_id).first()
+
+    if not task:
+        raise HTTPException( status_code=404, detail="Task not found")
+
+    allowed_status = ["Pending", "In Progress", "Completed"]
+
+    if status_data.status not in allowed_status:
+        raise HTTPException(status_code=400, detail="Invalid status")
+
+    task.status = status_data.status
+
+    db.commit()
+    db.refresh(task)
+
+    return task
 
 @app.get("/tasks")
 def get_tasks(db: Session = Depends(get_db)):
@@ -321,8 +394,15 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
 
     return task
 
+@app.get("/my-tasks")
+def my_tasks(current_user = Depends(get_current_user), db: Session = Depends(get_db)):
+
+    tasks = db.query(Task).filter(Task.assigned_to == current_user["user_id"]).all()
+
+    return tasks
+
 @app.put("/tasks/{task_id}")
-def update_task(task_id: int, task: TaskCreate, db: Session = Depends(get_db)):
+def update_task(task_id: int, task: TaskCreate, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     existing_task = db.query(Task).filter(Task.id == task_id).first()
 
@@ -343,7 +423,7 @@ def update_task(task_id: int, task: TaskCreate, db: Session = Depends(get_db)):
     return existing_task
 
 @app.delete("/tasks/{task_id}")
-def delete_task(task_id: int, db: Session = Depends(get_db)):
+def delete_task(task_id: int, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
     task = db.query(Task).filter(Task.id == task_id).first()
 
@@ -357,10 +437,34 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
         "message": "Task deleted"
     }
 
-@app.post("/comments")
-def create_comment(comment: CommentCreate, db: Session = Depends(get_db)):
+@app.put("/tasks/{task_id}/assign")
+def assign_task(task_id: int, data: AssignTask, db: Session = Depends(get_db), current_user = Depends(admin_required)):
 
-    new_comment = Comment(content=comment.content, task_id=comment.task_id, user_id=comment.user_id)
+    task = db.query(Task).filter(Task.id == task_id).first()
+
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    user = db.query(User).filter(User.id == data.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    task.assigned_to = data.user_id
+
+    db.commit()
+    db.refresh(task)
+
+    return {
+        "message": "Task assigned successfully",
+        "task_id": task.id,
+        "assigned_to": task.assigned_to
+    }
+
+@app.post("/comments")
+def create_comment(comment: CommentCreate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+
+    new_comment = Comment(content=comment.content, task_id=comment.task_id, user_id=current_user["user_id"])
 
     db.add(new_comment)
     db.commit()
@@ -416,7 +520,7 @@ def delete_comment(comment_id: int, db: Session = Depends(get_db)):
     }
 
 @app.post("/attachments")
-def upload_file(task_id: int, uploaded_by: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_file(task_id: int, file: UploadFile = File(...), db: Session = Depends(get_db),  current_user = Depends(get_current_user)):
 
     unique_filename = f"{uuid.uuid4()}_{file.filename}"
     file_location = f"uploads/{unique_filename}"
@@ -424,7 +528,7 @@ def upload_file(task_id: int, uploaded_by: int, file: UploadFile = File(...), db
     with open(file_location, "wb") as buffer:
         buffer.write(file.file.read())
 
-    attachment = Attachment(filename=unique_filename, task_id=task_id, uploaded_by=uploaded_by)
+    attachment = Attachment(filename=unique_filename, task_id=task_id, uploaded_by=current_user["user_id"])
 
     db.add(attachment)
     db.commit()
@@ -448,6 +552,18 @@ def get_task_attachments(task_id: int, db: Session = Depends(get_db)):
     attachments = db.query(Attachment).filter(Attachment.task_id == task_id).all()
     return attachments
 
+@app.get("/attachments/{attachment_id}/download")
+def download_file(attachment_id:int, db:Session=Depends(get_db)):
+
+    attachment = db.query(Attachment).filter(Attachment.id == attachment_id).first()
+
+    if not attachment:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_path = f"uploads/{attachment.filename}"
+
+    return FileResponse(path=file_path, filename=attachment.filename)
+
 @app.delete("/attachments/{attachment_id}")
 def delete_attachment(attachment_id: int, db: Session = Depends(get_db)):
 
@@ -463,3 +579,29 @@ def delete_attachment(attachment_id: int, db: Session = Depends(get_db)):
         "message": "Attachment deleted"
     }
 
+@app.get("/admin/dashboard")
+def admin_dashboard(db:Session=Depends(get_db), current_user=Depends(admin_required)):
+
+    total_users=db.query(User).count()
+    total_teams=db.query(Team).count()
+    total_projects=db.query(Project).count()
+    total_tasks=db.query(Task).count()
+
+    return {
+        "total_users":total_users,
+        "total_teams":total_teams,
+        "total_projects":total_projects,
+        "total_tasks":total_tasks
+    }
+
+@app.get("/client/dashboard")
+def client_dashboard(current_user=Depends(get_current_user), db:Session=Depends(get_db)):
+
+    my_tasks = db.query(Task).filter(Task.assigned_to==current_user["user_id"]).count()
+
+    my_comments=db.query(Comment).filter(Comment.user_id==current_user["user_id"]).count()
+
+    return {
+        "my_tasks":my_tasks,
+        "my_comments":my_comments
+    }
